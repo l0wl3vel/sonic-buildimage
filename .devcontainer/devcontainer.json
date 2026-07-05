@@ -1,0 +1,68 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+{
+	"name": "Ubuntu",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+	"features": {
+		"ghcr.io/devcontainers/features/docker-in-docker:3": {
+			"moby": true,
+			"azureDnsAutoDetection": true,
+			"installDockerBuildx": true,
+			"version": "latest",
+			"dockerDashComposeVersion": "v2"
+		}
+	},
+
+	"privileged": true,
+
+	// Fix Docker MTU mismatch in Azure/k8s environments.
+	//
+	// When this devcontainer runs as a Kubernetes pod on Azure, the pod's eth0 has
+	// MTU 1460 (Azure SDN reserves 40 bytes for its overlay).  Docker-in-Docker
+	// defaults docker0 to MTU 1500, so containers announce TCP MSS 1460 and send
+	// 1500-byte IP packets that cannot leave via eth0 (DF=1).  iptables MASQUERADE
+	// rewrites the source to the pod IP before the packet hits eth0, so the ICMP
+	// "fragmentation needed" reply goes to the host itself — the container never
+	// learns the path MTU and every large-packet TCP connection silently times out.
+	//
+	// Additionally, the Azure Debian mirror (debian-archive.trafficmanager.net) has
+	// an AAAA record but Docker containers have no IPv6 route, so apt hangs for the
+	// full Acquire::http::Timeout on each host before falling back to IPv4.  The
+	// force-ipv4 apt config in sonic-slave-bookworm/files/apt/apt.conf.d/ fixes that.
+	//
+	// The MTU fix runs in postStartCommand (not postCreateCommand) so it re-applies
+	// on every pod restart — /etc/docker is not in a persistent volume so it is lost
+	// when a Kubernetes pod is replaced.  `service docker restart` does not work in
+	// this DinD environment; we kill and re-launch dockerd with the same flags used
+	// by docker-init.sh so it picks up the daemon.json we just wrote.
+	"postCreateCommand": "sudo apt update && sudo apt install -y kmod && sudo usermod -aG sudo vscode",
+	"postStartCommand": "sudo chmod -R 777 /var/cache/sonic && sudo bash -c 'MTU=$(cat /sys/class/net/eth0/mtu 2>/dev/null || echo 1500); if [ \"$MTU\" -lt 1500 ]; then mkdir -p /etc/docker && echo \"{\\\"mtu\\\": $MTU}\" > /etc/docker/daemon.json && kill $(pgrep dockerd) 2>/dev/null; sleep 3; find /run /var/run -iname docker*.pid -delete 2>/dev/null || true; dockerd --containerd /run/containerd/containerd.sock >> /var/log/dockerd.log 2>&1 & sleep 5; fi'",
+	// && SONIC_DIR=${workspaceFolder} bash ${workspaceFolder}/scripts/prerequisites.sh",
+
+	"mounts": [
+		{
+            // Prevents extraction issues due to exceeding RO overlayfs limits when pulling and extracting big docker images
+			"target": "/var/lib/docker",
+			"type": "volume"
+		},
+		{
+			"target": "/var/cache/sonic",
+			"type": "volume"
+		}
+	]
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	// "postCreateCommand": "uname -a",
+
+	// Configure tool-specific properties.
+	// "customizations": {},
+
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}

@@ -1229,6 +1229,7 @@ docker-start :
 	$(Q)sudo bash -c "{ echo \"export http_proxy=$$http_proxy\"; \
 	            echo \"export https_proxy=$$https_proxy\"; \
 	            echo \"export no_proxy=$$no_proxy\"; } >> /etc/default/docker"
+	$(Q)sudo bash -c 'MTU=$$(cat /sys/class/net/eth0/mtu 2>/dev/null || echo 1500); if [ "$$MTU" -lt 1500 ]; then mkdir -p /etc/docker && echo "{\"mtu\": $$MTU}" > /etc/docker/daemon.json; fi'
 	$(Q)if [ x$(SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD) = x"y" ]; then \
 		test -S /var/run/docker.sock && sudo docker ps &> /dev/null || ./scripts/wait_for_docker.sh 60; \
 	else \
