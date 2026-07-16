@@ -6,7 +6,7 @@ This tree pins three repos to personal forks that carry local patches on a
 | Repo                  | Path                 | Fork                                      | Local patches |
 |------------------------|----------------------|--------------------------------------------|----------------|
 | sonic-buildimage       | `.` (this repo)      | `l0wl3vel/sonic-buildimage`                | devcontainer, `build-vpp-artifacts.sh`, Docker MTU fix, `FRR_PYTHONTOOLS` dep, submodule pins below |
-| sonic-sairedis         | `src/sonic-sairedis` | `l0wl3vel/sonic-sairedis`                  | IPv6 ND/MLD multicast-to-hostif-tap forwarding, PR #1959 (VLAN BVI support, upstream, unmerged) |
+| sonic-sairedis         | `src/sonic-sairedis` | `l0wl3vel/sonic-sairedis`                  | IPv6 ND/MLD multicast-to-hostif-tap forwarding, ip6 mfib punt via `sonic_ext`, per-lcp-pair link-local mcast punt+inject, RFC 5549 nexthop `sw_if_index` resolution, RIF IPv4-enable + VLAN-RIF neighbor resolution |
 | sonic-platform-vpp     | `platform/vpp`       | `l0wl3vel/sonic-platform-vpp`              | Guard all VPP package registration behind `BLDENV=trixie` |
 
 Every repo has two remotes:
@@ -51,12 +51,49 @@ git rebase upstream/master vpp-integration     # replays our commits onto the ne
 git push --force-with-lease fork vpp-integration
 ```
 
-Since our commits for sairedis include real cherry-picks of upstream PR
-#1959, watch for that PR being merged upstream in the meantime: if
-`upstream/master` now contains those same commits, the rebase will produce
-empty/no-op commits for them — drop them with `git rebase --skip` (or
-preemptively `git rebase --onto upstream/master <old-base> vpp-integration`
-picking a new base past the merge) rather than keeping duplicates.
+Watch for any of our sairedis commits landing upstream in the meantime. When
+they do, drop ours rather than replaying duplicates: upstream's merged version
+is authoritative and usually carries review changes ours never got.
+
+Because a squash-merge upstream shares no patch-id with our commits, `git
+rebase` will *not* auto-detect them as already-applied — it will happily replay
+duplicates and hand you conflicts against upstream's own copy. Detect the
+overlap by hand before rebasing:
+
+```sh
+git log --oneline <merge-base>..upstream/master   # anything that looks like our work?
+git diff --name-only upstream/master...vpp-integration   # our files
+```
+
+If a commit has landed, rebuild the branch skipping it — cherry-pick our
+unique commits onto `upstream/master` and leave the merged ones behind:
+
+```sh
+git checkout -B sync-wip upstream/master
+git cherry-pick <first-unique>            # repeat / use ranges, omitting merged commits
+git branch -f vpp-integration sync-wip
+```
+
+Verify the outcome with `git range-diff <old-base>..<old-tip>
+upstream/master..vpp-integration` — dropped commits show as `<`, and anything
+marked `!` is a commit whose content the rebase changed, which is exactly where
+to look for a botched conflict resolution.
+
+**Precedent (2026-07-16):** PR #1959 (VLAN BVI support + DHCP/LLDP L2 classifier
+punt) was re-opened as **PR #1981** and merged upstream. Four of our nine
+sairedis commits (`VLAN BVI support`, `Add l2 classifier to punt dhcp packet`,
+`Reduce classifier table size`, `Add SWSS_LOG_ENTER to the new functions`) were
+dropped in favour of upstream's version, which is a superset — it adds
+best-effort punt error handling, `VALUE_EXIST` idempotency in
+`vpp_normalize_ret`, null-context guards, and LAG egress-disable integration
+(PR #1953), while keeping our reduced classifier table size. Our five remaining
+commits now sit on top of it.
+
+That rebase also produced one non-trivial conflict worth remembering: upstream
+moved the `sflow` msg-id lookup to the end of `vpp_connect`, while our
+`sonic_ext` commit inserted its own lookup above the old `sflow` position. The
+resolution keeps only the `sonic_ext` block — re-adding `sflow` from our side
+would double-initialize it.
 
 ## 2. Sync the superproject (sonic-buildimage)
 
@@ -92,7 +129,32 @@ git add src/sonic-sairedis              # records our fork's commit as the resol
 git rebase --continue
 ```
 
-Repeat for `platform/vpp`. Once the rebase finishes:
+Repeat for `platform/vpp`.
+
+**Careful with the intermediate pin commits.** Our patch set contains several
+"Update <submodule> pin to ..." commits, not just one, so this conflict fires
+once per pin commit — and resolving them all to the fork's *final* tip would
+make every intermediate commit pin the same SHA and misrepresent history. If
+step 1 rewrote the submodule's commits, resolve each pin commit to the *rebased
+equivalent* of what it originally pinned, so every commit on the branch pins a
+commit that still exists on the fork after the force-push:
+
+```sh
+# what the pre-rebase commits pinned:
+git ls-tree <old-pin-commit> src/sonic-sairedis
+# check out that commit's rebased counterpart, then record it:
+git -C src/sonic-sairedis checkout <rebased-equivalent>
+git add src/sonic-sairedis && git rebase --continue
+```
+
+Use the submodule's own `range-diff` (old range vs new) to map old SHA → new
+SHA. For a pin whose original target was *dropped* because it merged upstream,
+pin the rebased commit that reproduces the same tree state — e.g. in the
+2026-07-16 sync, the pin at the tip of the dropped BVI series mapped forward to
+our IPv6 ND/MLD commit sitting on top of upstream's merged BVI work. Remember to
+leave the submodule back on `vpp-integration` for the final pin commit.
+
+Once the rebase finishes:
 
 ```sh
 git push --force-with-lease fork vpp-integration
